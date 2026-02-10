@@ -1,0 +1,122 @@
+# { "Depends": "py-genlayer:test" }
+
+from genlayer import *
+import json
+
+
+class BtcPriceBet(gl.Contract):
+    """
+    A simple GenLayer Intelligent Contract that lets two players bet
+    on the future BTC/USD price.
+
+    - One player bets that BTC price will be >= threshold_usd.
+    - The other player bets that BTC price will be < threshold_usd.
+    - The contract fetches the BTC/USD spot price from the web,
+      using GenLayer's native web access and the Equivalence Principle.
+    - Once resolved, the winner is stored on-chain.
+    """
+
+    # ---- Persistent storage fields ----
+    # Threshold BTC price in whole USD (e.g. 60000)
+    threshold_usd: u256
+
+    # Address of the player who bets that BTC >= threshold_usd
+    better_above: Address
+
+    # Address of the player who bets that BTC < threshold_usd
+    better_below: Address
+
+    # Flag indicating whether the bet has been resolved
+    is_resolved: bool
+
+    # Winner address (either better_above or better_below)
+    winner: Address
+
+    # BTC price in whole USD at the time of resolution
+    resolved_price_usd: u256
+
+    # ---- Constructor ----
+    def __init__(
+        self,
+        threshold_usd: int,   # принимаем обычный int
+        better_above: str,    # адрес как строка "0x...."
+        better_below: str,    # адрес как строка "0x...."
+    ):
+        # Конвертируем в u256 для хранения
+        self.threshold_usd = u256(threshold_usd)
+
+        # Конвертируем входные строки в Address
+        self.better_above = Address(better_above)
+        self.better_below = Address(better_below)
+
+        # Initial state: not resolved yet
+        self.is_resolved = False
+
+        # Инициализируем winner валидным Address
+        self.winner = self.better_above
+
+        # No price known yet
+        self.resolved_price_usd = u256(0)
+
+    # ---- View: show current state in a human-readable form ----
+    @gl.public.view
+    def get_state(self) -> str:
+        status = "resolved" if self.is_resolved else "open"
+        return (
+            f"Status: {status}, "
+            f"threshold: {int(self.threshold_usd)} USD, "
+            f"resolved_price: {int(self.resolved_price_usd)} USD, "
+            f"better_above: {self.better_above}, "
+            f"better_below: {self.better_below}, "
+            f"winner: {self.winner}"
+        )
+
+    # ---- View: get the winner address (only after resolution) ----
+    @gl.public.view
+    def get_winner(self) -> Address:
+        assert self.is_resolved, "Bet is not resolved yet"
+        return self.winner
+
+    # ---- Write: resolve the bet using a web price ----
+    @gl.public.write
+    def resolve_bet(self) -> None:
+        # Prevent resolving the same bet twice
+        assert not self.is_resolved, "Bet already resolved"
+
+        # Copy threshold to a local variable.
+        # Storage must not be modified or accessed from inside
+        # the non-deterministic block that calls the web.
+        local_threshold: u256 = self.threshold_usd
+
+        # Step 1: define a non-deterministic function that fetches
+        # BTC/USD spot price from Coinbase API as raw text.
+        def fetch_btc_spot_raw() -> str:
+            url = "https://api.coinbase.com/v2/prices/BTC-USD/spot"
+            # gl.get_webpage is a non-deterministic web access helper.
+            # It MUST be called only from within a function that is
+            # passed into gl.eq_principle_*.
+            return gl.get_webpage(url, mode="text")
+
+        # Step 2: wrap the web call in the Equivalence Principle.
+        raw_body: str = gl.eq_principle_strict_eq(fetch_btc_spot_raw)
+
+        # Step 3: parse JSON deterministically and extract the amount.
+        data = json.loads(raw_body)
+        amount_str = data["data"]["amount"]  # e.g. "67321.12"
+
+        # For this demo we only care about the integer USD part.
+        whole_part = amount_str.split(".")[0]
+        price_int = int(whole_part)
+
+        # Convert to u256 for storage
+        price_usd = u256(price_int)
+
+        # Step 4: update storage in a deterministic section.
+        self.resolved_price_usd = price_usd
+
+        if price_usd >= local_threshold:
+            self.winner = self.better_above
+        else:
+            self.winner = self.better_below
+
+        self.is_resolved = True
