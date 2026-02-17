@@ -77,6 +77,24 @@ class BtcPriceBet(gl.Contract):
         assert self.is_resolved, "Bet is not resolved yet"
         return self.winner
 
+    # ---- View: export full contract state as JSON (for copying/downloading) ----
+    @gl.public.view
+    def export_state(self) -> str:
+        """
+        Returns complete contract state as a JSON string.
+        Useful for off-chain backup, verification, or UI integration.
+        """
+        state = {
+            "threshold_usd": int(self.threshold_usd),
+            "better_above": str(self.better_above),
+            "better_below": str(self.better_below),
+            "is_resolved": self.is_resolved,
+            "winner": str(self.winner) if self.is_resolved else None,
+            "resolved_price_usd": int(self.resolved_price_usd) if self.is_resolved else None,
+            "status": "resolved" if self.is_resolved else "open"
+        }
+        return json.dumps(state, separators=(',', ':'))
+
     # ---- Write: resolve the bet using a web price ----
     @gl.public.write
     def resolve_bet(self) -> None:
